@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>年齢計算</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        .input-error {
+            border-color: #f87171 !important; /* red-400 */
+            box-shadow: 0 0 0 2px #fecaca; /* red-200 */
+        }
+        .error-message {
+            color: #ef4444; /* red-500 */
+            font-size: 0.875rem; /* 14px */
+            min-height: 1.25rem; /* Ensure space for error message */
+        }
+        .result-box-base {
+            border-left-width: 4px;
+            padding: 1rem; /* p-4 */
+            margin-top: 1rem; /* mt-4 */
+            border-radius: 0.5rem; /* rounded-lg */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-md */
+        }
+        .age-result-box {
+            background-color: #eff6ff; /* blue-50 */
+            border-color: #3b82f6; /* blue-500 */
+        }
+        .age-result-text {
+            color: #1e40af; /* blue-800 */
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #60a5fa; /* blue-400 */
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3); /* focus:ring-blue-500 with opacity */
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-100 to-sky-100 min-h-screen flex items-center justify-center p-4 selection:bg-sky-300 selection:text-sky-900">
+    <div class="bg-white p-6 sm:p-10 rounded-xl shadow-2xl w-full max-w-xl mx-auto">
+        <header class="mb-8 text-center">
+            <h1 class="text-4xl sm:text-5xl font-bold text-sky-700 tracking-tight">年齢計算</h1>
+            <p class="text-slate-500 mt-3 text-sm sm:text-base">生年月日または年を入力してください。<br>(例: 昭和50年1月1日, 1975/1/1, 19750101, s500101, 1989, h1)</p>
+        </header>
+
+        <div class="space-y-5">
+            <div>
+                <label for="birthDateInput" class="block text-sm font-medium text-slate-700 mb-1.5">生年月日 または 年</label>
+                <textarea id="birthDateInput" name="birthDateInput" rows="2" placeholder="例: 昭50.1.1, 19750101, s500101, 1989, h1" class="w-full p-3 border border-slate-300 rounded-lg shadow-sm transition duration-150 resize-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500 focus:ring-opacity-50"></textarea>
+            </div>
+            <div id="error-container" class="error-message mt-1.5"></div>
+        </div>
+
+        <div id="result-area" class="mt-6">
+            </div>
+    </div>
+
+    <script>
+        // 元号のマッピング情報
+        const eraMapping = {
+            '明治': { startYear: 1868, name: 'meiji', initial: 'm' },
+            '大正': { startYear: 1912, name: 'taisho', initial: 't' },
+            '昭和': { startYear: 1926, name: 'showa',  initial: 's' },
+            '平成': { startYear: 1989, name: 'heisei', initial: 'h' },
+            '令和': { startYear: 2019, name: 'reiwa',  initial: 'r' }
+        };
+
+        // 元号の正確な開始日
+        const eraStartDates = {
+            'meiji':  { year: 1868, month: 10, day: 23 }, // 明治元年9月8日 (旧暦) -> 1868年10月23日 (新暦)
+            'taisho': { year: 1912, month: 7, day: 30 },
+            'showa':  { year: 1926, month: 12, day: 25 },
+            'heisei': { year: 1989, month: 1, day: 8 },
+            'reiwa':  { year: 2019, month: 5, day: 1 }
+        };
+        
+        // 各元号の最終日 (令和は現在進行中のため含めない)
+        const eraEndDates = {
+            'meiji':  { year: 1912, month: 7, day: 29 },
+            'taisho': { year: 1926, month: 12, day: 24 },
+            'showa':  { year: 1989, month: 1, day: 7 },
+            'heisei': { year: 2019, month: 4, day: 30 }
+        };
+
+        // HTML要素の取得
+        const birthDateInput = document.getElementById('birthDateInput');
+        const resultArea = document.getElementById('result-area');
+        const errorContainer = document.getElementById('error-container');
+
+        // 全角数字を半角に変換する関数
+        function zenkakuToHankaku(str) {
+            if (typeof str !== 'string') return str;
+            return str.replace(/[０-９]/g, function(s) {
+                return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
+            });
+        }
+
+        // 入力イベントリスナー
+        birthDateInput.addEventListener('input', () => {
+            let inputText = birthDateInput.value.trim();
+            
+            // エラーメッセージと結果表示をクリア
+            errorContainer.textContent = '';
+            resultArea.innerHTML = '';
+            birthDateInput.classList.remove('input-error');
+
+            // 入力が空の場合は何もしない
+            if (!inputText) {
+                return;
+            }
+
+            // 全角数字を半角に変換
+            inputText = zenkakuToHankaku(inputText);
+
+            let gregorianYear, month, day;
+            let eraKanji = ''; // 認識された元号（漢字表記）
+            let warekiYearText = ''; // 表示用の和暦年（「元」または数字）
+            let parsedDateString = ''; // 解析後の日付文字列 (表示用)
+            let isYearOnlyInput = false; // 年のみの入力かを判定するフラグ
+
+            // --- 正規表現の定義 ---
+            // 詳細な日付形式 (YYYYMMDD, MYYMMDD, 漢字和暦, 西暦年月日, 西暦スラッシュ区切り)
+            const yyyymmddRegex = /^(\d{4})(\d{2})(\d{2})$/; // 例: 19750101
+            const gYYMMDDRegex = /^([mtshr])(\d{1,2})(\d{2})(\d{2})$/i; // 例: s500101 (大文字・小文字区別なし)
+            const warekiKanjiRegex = /^(明治|大正|昭和|平成|令和)\s*(\d+|元)\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日$/; // 例: 昭和50年1月1日
+            const seirekiYmdRegex = /^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日$/; // 例: 1975年1月1日
+            const seirekiSlashRegex = /^(\d{4})\s*[/／]\s*(\d{1,2})\s*[/／]\s*(\d{1,2})$/; // 例: 1975/1/1 または 1975／1／1
+
+            // 年のみの形式 (和暦年, 西暦年)
+            const warekiYearOnlyRegex = /^([mtshr])(\d{1,2})$/i; // 例: h1, S50 (大文字・小文字区別なし)
+            const seirekiYearOnlyRegex = /^(\d{4})$/; // 例: 1989
+
+            let match;
+
+            // --- 入力形式の解析 ---
+            if (match = inputText.match(yyyymmddRegex)) {
+                gregorianYear = parseInt(match[1]);
+                month = parseInt(match[2]);
+                day = parseInt(match[3]);
+                parsedDateString = `${gregorianYear}年${month}月${day}日`;
+            } else if (match = inputText.match(gYYMMDDRegex)) {
+                const eraInitial = match[1].toLowerCase();
+                const warekiYearNum = parseInt(match[2]);
+                month = parseInt(match[3]);
+                day = parseInt(match[4]);
+
+                const foundEra = Object.entries(eraMapping).find(([key, value]) => value.initial === eraInitial);
+                if (!foundEra) {
+                    errorContainer.textContent = "元号の頭文字が認識できません。";
+                    birthDateInput.classList.add('input-error');
+                    return;
+                }
+                eraKanji = foundEra[0];
+                const eraInfo = foundEra[1];
+                gregorianYear = eraInfo.startYear + warekiYearNum - 1;
+                // 元年処理: 和暦1年目が元号の開始年と一致する場合のみ「元」と表示
+                warekiYearText = (warekiYearNum === 1 && gregorianYear === eraInfo.startYear) ? '元' : String(warekiYearNum);
+                parsedDateString = `${eraKanji}${warekiYearText}年${month}月${day}日 (${gregorianYear}年${month}月${day}日)`;
+                // 元号の範囲チェックは後続のバリデーションで行う
+            } else if (match = inputText.match(warekiKanjiRegex)) {
+                eraKanji = match[1];
+                warekiYearText = match[2]; // "元" または数字
+                month = parseInt(match[3]);
+                day = parseInt(match[4]);
+                const eraInfo = eraMapping[eraKanji];
+                if (!eraInfo) { 
+                    errorContainer.textContent = "元号が認識できません。";
+                    birthDateInput.classList.add('input-error');
+                    return;
+                }
+                const warekiYearNum = (warekiYearText === '元') ? 1 : parseInt(warekiYearText);
+                gregorianYear = eraInfo.startYear + warekiYearNum - 1;
+                parsedDateString = `${eraKanji}${warekiYearText}年${month}月${day}日 (${gregorianYear}年${month}月${day}日)`;
+            } else if (match = inputText.match(seirekiYmdRegex)) {
+                gregorianYear = parseInt(match[1]);
+                month = parseInt(match[2]);
+                day = parseInt(match[3]);
+                parsedDateString = `${gregorianYear}年${month}月${day}日`;
+            } else if (match = inputText.match(seirekiSlashRegex)) {
+                gregorianYear = parseInt(match[1]);
+                month = parseInt(match[2]);
+                day = parseInt(match[3]);
+                parsedDateString = `${gregorianYear}年${month}月${day}日 (入力: ${match[0]})`;
+            } else if (match = inputText.match(warekiYearOnlyRegex)) { // 年のみ: 和暦
+                isYearOnlyInput = true;
+                const eraInitial = match[1].toLowerCase();
+                const warekiYearNumInput = parseInt(match[2]);
+
+                const foundEraEntry = Object.entries(eraMapping).find(([key, value]) => value.initial === eraInitial);
+                if (!foundEraEntry) {
+                    errorContainer.textContent = "元号の頭文字が認識できません。";
+                    birthDateInput.classList.add('input-error');
+                    return;
+                }
+                eraKanji = foundEraEntry[0];
+                const eraInfo = foundEraEntry[1];
+                gregorianYear = eraInfo.startYear + warekiYearNumInput - 1;
+                warekiYearText = (warekiYearNumInput === 1 && gregorianYear === eraInfo.startYear) ? '元' : String(warekiYearNumInput);
+            } else if (match = inputText.match(seirekiYearOnlyRegex)) { // 年のみ: 西暦
+                isYearOnlyInput = true;
+                gregorianYear = parseInt(match[1]);
+            } else {
+                errorContainer.textContent = "入力形式が正しくありません。";
+                birthDateInput.classList.add('input-error');
+                return;
+            }
+
+            // --- 年のみ入力の場合の処理 ---
+            if (isYearOnlyInput) {
+                const currentYear = new Date().getFullYear();
+                if (isNaN(gregorianYear) || gregorianYear <= 0) {
+                    errorContainer.textContent = "年を正しく入力してください。";
+                    birthDateInput.classList.add('input-error');
+                    return;
+                }
+                 // 元号の開始年より前の年はエラー（和暦年のみ入力時）
+                if (eraKanji) {
+                    const eraInfo = eraMapping[eraKanji];
+                    if (gregorianYear < eraInfo.startYear) {
+                         errorContainer.textContent = `${eraKanji}${warekiYearText}年は元号の開始年(${eraInfo.startYear}年)より前です。`;
+                         birthDateInput.classList.add('input-error');
+                         return;
+                    }
+                    // 元号の終了年より後の年もエラー (令和以外)
+                    const eraEndDateInfo = eraEndDates[eraInfo.name];
+                    if (eraEndDateInfo && gregorianYear > eraEndDateInfo.year) {
+                        errorContainer.textContent = `${eraKanji}${warekiYearText}年は元号の終了年(${eraEndDateInfo.year}年)より後です。`;
+                        birthDateInput.classList.add('input-error');
+                        return;
+                    }
+                }
+
+
+                if (gregorianYear > currentYear + 1) { // 未来すぎる年もエラー (例: 来年まで許容)
+                    errorContainer.textContent = "未来の年です。";
+                    birthDateInput.classList.add('input-error');
+                    return;
+                }
+                // 非常に古い年の制限 (例: 明治より前はエラー)
+                if (gregorianYear < eraMapping['明治'].startYear && !eraKanji) { // 西暦入力で明治より前
+                    errorContainer.textContent = "年が古すぎます（明治以降で入力してください）。";
+                    birthDateInput.classList.add('input-error');
+                    return;
+                }
+
+
+                const ageApproxHigh = currentYear - gregorianYear;
+                const ageApproxLow = ageApproxHigh - 1;
+
+                let displayYearString = '';
+                if (eraKanji) {
+                    displayYearString = `${eraKanji}${warekiYearText}年 (${gregorianYear}年) (概算)`;
+                } else {
+                    displayYearString = `${gregorianYear}年 (概算)`;
+                }
+
+                resultArea.innerHTML = `
+                    <div class="result-box-base age-result-box">
+                        <p class="text-lg font-semibold age-result-text">計算結果</p>
+                        <p class="mt-1.5 age-result-text text-sm">生年: ${displayYearString}</p>
+                        <p class="text-3xl font-bold text-sky-600 mt-2.5">${ageApproxLow < 0 ? 0 : ageApproxLow}～${ageApproxHigh}歳</p>
+                    </div>
+                `;
+                return; // 年のみの場合はここで処理終了
+            }
+
+            // --- 以下、年月日が完全に指定された場合のバリデーションと計算 ---
+            let isValid = true;
+            let errors = [];
+
+            if (isNaN(gregorianYear) || gregorianYear <= 0 ) {
+                 errors.push("年を正しく入力してください。"); isValid = false;
+            }
+            if (isNaN(month) || month < 1 || month > 12) {
+                errors.push("月を1から12の間で入力してください。"); isValid = false;
+            }
+            if (isNaN(day) || day < 1 || day > 31) { 
+                errors.push("日を1から31の間で入力してください。"); isValid = false;
+            }
+            
+            if (!isValid) { // 基本的な年月日チェックでエラーがあれば表示して終了
+                errorContainer.textContent = errors.join(' ');
+                birthDateInput.classList.add('input-error');
+                return;
+            }
+
+            // 元号の正確な日付範囲チェック (年月日が揃っている場合)
+            if (eraKanji) { // eraKanji が設定されている = 和暦ベースの入力だった
+                const eraKey = eraMapping[eraKanji].name;
+                const eraStartDate = eraStartDates[eraKey];
+                if (gregorianYear < eraStartDate.year || 
+                    (gregorianYear === eraStartDate.year && month < eraStartDate.month) ||
+                    (gregorianYear === eraStartDate.year && month === eraStartDate.month && day < eraStartDate.day)) {
+                    errors.push(`${eraKanji}${warekiYearText}年は元号の開始日 (${eraStartDate.year}年${eraStartDate.month}月${eraStartDate.day}日) より前です。`);
+                    isValid = false;
+                }
+                const eraEndDate = eraEndDates[eraKey]; // 令和には存在しない
+                if (eraEndDate && 
+                    (gregorianYear > eraEndDate.year ||
+                    (gregorianYear === eraEndDate.year && month > eraEndDate.month) ||
+                    (gregorianYear === eraEndDate.year && month === eraEndDate.month && day > eraEndDate.day))) {
+                    errors.push(`${eraKanji}${warekiYearText}年は元号の終了日 (${eraEndDate.year}年${eraEndDate.month}月${eraEndDate.day}日) より後です。`);
+                    isValid = false;
+                }
+            }
+            
+            // 各月の日数チェック
+            const daysInMonth = new Date(gregorianYear, month, 0).getDate(); // monthは1ベースなので、0を指定すると前月の最終日
+            if (day > daysInMonth) {
+                errors.push(`${month}月は${daysInMonth}日までです。`); isValid = false;
+            }
+
+            if (!isValid) { // 追加のバリデーションでエラーがあれば表示して終了
+                errorContainer.textContent = errors.join(' ');
+                birthDateInput.classList.add('input-error');
+                return;
+            }
+
+            // --- 年齢計算 ---
+            const birthDate = new Date(gregorianYear, month - 1, day); // Dateオブジェクトの月は0ベース
+            const today = new Date();
+            today.setHours(0,0,0,0); // 時刻をリセットして日付のみで比較
+            birthDate.setHours(0,0,0,0); // 同上
+
+            if (birthDate > today) {
+                errorContainer.textContent = "未来の日付は入力できません。";
+                birthDateInput.classList.add('input-error');
+                return;
+            }
+
+            let age = today.getFullYear() - birthDate.getFullYear();
+            const m = today.getMonth() - birthDate.getMonth();
+            if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+                age--;
+            }
+            
+            // 結果表示
+            resultArea.innerHTML = `
+                <div class="result-box-base age-result-box">
+                    <p class="text-lg font-semibold age-result-text">計算結果</p>
+                    <p class="mt-1.5 age-result-text text-sm">生年月日: ${parsedDateString}</p>
+                    <p class="text-3xl font-bold text-sky-600 mt-2.5">${age}歳</p>
+                </div>
+            `;
+        });
+    </script>
+</body>
+</html>
